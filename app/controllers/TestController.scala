@@ -1,12 +1,10 @@
 package controllers
 
 import DbAccess.Repository.UserRepository
-import DbAccess.Table.User
 import play.api._
-import play.api.libs.functional.syntax.toFunctionalBuilderOps
-import play.api.libs.json.{JsError, JsResult, JsSuccess, Json, Reads, __}
+import play.api.libs.json._
 import play.api.mvc._
-import play.request.{LoginReq, TestDbGetWithoutDslWithParamsReq}
+import play.request.{LoginReq, TestDbDelete, TestDbGetWithoutDslWithParamsReq, TestDbInsert, TestDbUpdate}
 import scalikejdbc._
 
 import javax.inject._
@@ -16,47 +14,14 @@ import scala.language.postfixOps
 class TestController @Inject() (
     val controllerComponents: ControllerComponents,
     val playBodyParsers: PlayBodyParsers,
+    val authenticatedActionController: AuthenticatedActionController, // 認証済みかどうかの判定を行う
     val userRepository: UserRepository)
   extends BaseController
   with Logging {
   implicit val session = AutoSession
 
-  implicit val rds: Reads[(String, String)] = (
-    (__ \ Symbol("email_address")).read[String] and
-      (__ \ Symbol("password")).read[String]
-  ) tupled
-
-  def testLogin() = Action(parse.json) { request =>
-    val parsedReq = request.body
-      .validate[(String, String)](rds)
-      .fold[LoginReq](
-        _ => LoginReq.empty(),
-        {
-          case (emailAddress, password) => LoginReq(emailAddress, password)
-          case _ => LoginReq("", "")
-        }
-      )
-
-    // 本当はここでDBへのアクセス及びログイン情報の照会を行う
-    if (parsedReq.emailAddress == "aaaa@gmail.com" && parsedReq.password == "aaaa") {
-      Ok(
-        Json.toJson(
-          (Map("result" -> "success", "email_address" -> parsedReq.emailAddress, "password" -> parsedReq.password))
-        )
-      )
-    } else {
-      BadRequest(
-        Json.toJson(
-          (Map("result" -> "failed", "email_address" -> parsedReq.emailAddress, "password" -> parsedReq.password))
-        )
-      )
-    }
-  }
-
   // 引数なしのGET リクエストの時の書き方(sql 補完子を利用した書き方)
   def testDbGetWithoutDsl() = Action(parse.json) { request =>
-    scalikejdbc.config.DBs.setupAll()
-
     val suzuki = userRepository.findByName("suzuki")
     suzuki match {
       case Some(suzuki) =>
@@ -76,16 +41,14 @@ class TestController @Inject() (
   }
 
   // 引数なしのGET リクエストの書き方(DSL Query を利用した書き方)
-  def testDbGetWithDsl() = Action(parse.json) { request =>
+  def testDbGet() = Action(parse.json) { request =>
     scalikejdbc.config.DBs.setupAll()
 
-    val u = User.syntax("u")
-    val jekyll: Seq[Option[User]] = Seq(withSQL[User] {
-      select.from(User as u).where.eq(u.name, "Jekyll")
-    }.map(User(u.resultName)).single().apply())
+    val jekyll = userRepository.findByNameDsl("Jekyll")
+
     println(s"jekyll: $jekyll")
 
-    jekyll.head match {
+    jekyll match {
       case Some(jekyll) =>
         Ok(
           Json.toJson(
@@ -103,10 +66,8 @@ class TestController @Inject() (
 
   // 引数ありのGET リクエストの書き方
   def testDbGetWithoutDslWithParams() = Action(parse.json) { request =>
-    scalikejdbc.config.DBs.setupAll()
-
-    val req = request.body.as[TestDbGetWithoutDslWithParamsReq] // バリデーションチェックはかからないけど取り合えず取得したいならこれが良い
-    val validatedReq = request.body.validate[TestDbGetWithoutDslWithParamsReq] // バリデーションチェック付きだと思ったけどそうでもないのかも？？
+    val req = request.body.as[TestDbGetWithoutDslWithParamsReq] // 取得出来なかったときexception を投げてしまう
+    val validatedReq = request.body.validate[TestDbGetWithoutDslWithParamsReq] // エラーハンドリングが可能
 
     val hoge = validatedReq match {
       case s: JsSuccess[TestDbGetWithoutDslWithParamsReq] => s.get
@@ -115,6 +76,82 @@ class TestController @Inject() (
     // まさかの結果は変わらなかったw
     println(s"req.name: ${req.name}")
     println(s"hoge.name: ${hoge.name}")
+
+    val user = userRepository.findByNameDsl(req.name)
+    user match {
+      case Some(user) =>
+        Ok(
+          Json.toJson(
+            Map(
+              "name" -> user.name,
+              "email_address" -> user.emailAddress,
+              "password" -> user.password
+            )
+          )
+        )
+      case None =>
+        Ok(Json.toJson(Map("name" -> "", "email_address" -> "", "password" -> "")))
+    }
+
+  }
+
+  // INSERT のサンプル
+  def testDbInsert() = Action(parse.json) { request =>
+    val validatedReq = request.body.validate[TestDbInsert]
+
+    val req = validatedReq match {
+      case s: JsSuccess[TestDbInsert] => s.get
+      case _: JsError => TestDbInsert.empty()
+    }
+    println(s"name: ${req.name}")
+    println(s"email_address: ${req.emailAddress}")
+    println(s"password: ${req.password}")
+
+    val statusCode = userRepository.insertOne(req.name, req.password, req.emailAddress)
+    println(s"statusCode: $statusCode")
+    statusCode match {
+      case 1 => Ok(Json.toJson(Map("result" -> "success")))
+      case _ => BadRequest(Json.toJson(Map("result" -> "failure")))
+    }
+  }
+
+  // DELETE のサンプル
+  def testDbDelete() = Action(parse.json) { request =>
+    val validatedReq = request.body.validate[TestDbDelete]
+
+    val req = validatedReq match {
+      case s: JsSuccess[TestDbDelete] => s.get
+      case _: JsError => TestDbDelete.empty()
+    }
+    val statusCode = userRepository.deleteByName(req.name)
+    statusCode match {
+      case 1 => Ok(Json.toJson(Map("result" -> "success")))
+      case _ => BadRequest(Json.toJson(Map("result" -> "failure")))
+    }
+  }
+
+  def testDbUpdate() = Action(parse.json) { request =>
+    val validatedReq = request.body.validate[TestDbUpdate]
+
+    val req = validatedReq match {
+      case s: JsSuccess[TestDbUpdate] => s.get
+      case _: JsError => TestDbUpdate.empty()
+    }
+    val statusCode = userRepository.updatePassword(req.name, req.password)
+    statusCode match {
+      case 1 => Ok(Json.toJson(Map("result" -> "success")))
+      case _ => BadRequest(Json.toJson(Map("result" -> "failure")))
+    }
+  }
+
+  // 引数ありのGET でSecureAction の実験
+  def testSecureAction() = authenticatedActionController.SecureAction(parse.json) { request =>
+    val validatedReq = request.body.validate[TestDbGetWithoutDslWithParamsReq]
+
+    val req = validatedReq match {
+      case s: JsSuccess[TestDbGetWithoutDslWithParamsReq] => s.get
+      case _: JsError => TestDbGetWithoutDslWithParamsReq.empty()
+    }
 
     val user = userRepository.findByName(req.name)
     user match {
