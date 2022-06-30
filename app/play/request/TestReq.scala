@@ -19,12 +19,8 @@ case class TestDbDelete(name: String)
 
 object TestDbDelete {
 
-  implicit val readTestDbDelete = Reads[TestDbDelete] { json =>
-    json \ "name" match {
-      case JsDefined(name) => JsSuccess(TestDbDelete(name.as[String]))
-      case error: JsUndefined => JsError(error.toString)
-    }
-  }
+  implicit val readTestDbDelete: Reads[TestDbDelete] = ((__ \ "name").read[String]).map(TestDbDelete(_))
+
   def empty(): TestDbDelete = apply("")
 }
 
@@ -44,13 +40,8 @@ case class TestDbGetWithoutDslWithParamsReq(name: String)
 
 object TestDbGetWithoutDslWithParamsReq {
 
-  implicit val reads = Reads[TestDbGetWithoutDslWithParamsReq] { json =>
-    val parsePattern = json \ "name" // こんな感じでパターンを書いていく
-    parsePattern match {
-      case JsDefined(name) => JsSuccess(TestDbGetWithoutDslWithParamsReq(name.as[String]))
-      case error: JsUndefined => JsError(error.toString)
-    }
-  }
+  implicit val reads: Reads[TestDbGetWithoutDslWithParamsReq] =
+    ((__ \ "name").read[String]).map(TestDbGetWithoutDslWithParamsReq(_))
 
   def empty(): TestDbGetWithoutDslWithParamsReq = apply("")
 }
